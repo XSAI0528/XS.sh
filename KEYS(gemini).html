@@ -1,0 +1,517 @@
+<!<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght=400;700;900&family=JetBrains+Mono&display=swap');
+        body { font-family: 'Noto Sans TC', sans-serif; background-color: #f8fafc; overflow: hidden; }
+
+        /* 登入鎖定層 */
+        #loginOverlay {
+            position: fixed; inset: 0; z-index: 200;
+            background: #ffffff;
+            display: flex; items-center: center; justify-content: center;
+            transition: all 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .login-card {
+            width: 100%; max-width: 380px; padding: 3rem; text-align: center;
+            transition: all 0.5s ease;
+        }
+
+        /* 主系統進入動畫 */
+        #mainSystem { opacity: 0; transform: scale(0.98); transition: all 0.8s ease; height: 100vh; }
+        #mainSystem.unlocked { opacity: 1; transform: scale(1); }
+
+        /* 分頁切換 */
+        .tab-content { display: none; opacity: 0; transform: translateY(15px); transition: all 0.4s ease; }
+        .tab-content.active { display: block; opacity: 1; transform: translateY(0); }
+
+        /* 側邊欄按鈕 */
+        .nav-btn { transition: all 0.3s ease; border-radius: 12px; margin-bottom: 4px; color: #64748b; font-weight: 700; }
+        .nav-btn:hover { background: #f1f5f9; color: #1e293b; }
+        .nav-btn.active { background: #1e293b; color: white; }
+
+        /* 彈窗樣式 */
+        #customModal { opacity: 0; visibility: hidden; transition: all 0.4s ease; backdrop-filter: blur(0px); }
+        #customModal.show { opacity: 1; visibility: visible; backdrop-filter: blur(12px); }
+        #modalBox { transform: scale(0.9) translateY(20px); transition: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1); }
+        #customModal.show #modalBox { transform: scale(1) translateY(0); }
+
+        .macro-tag { cursor: pointer; transition: all 0.2s; border: 1px solid #e2e8f0; }
+        .macro-tag:hover { background: #3b82f6; color: white; border-color: #3b82f6; }
+
+        @keyframes slideIn { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: translateX(0); } }
+        .shake { animation: shake 0.4s ease-in-out; }
+        @keyframes shake { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-8px); } 75% { transform: translateX(8px); } }
+        
+        /* 輕量提示框動畫 */
+        .toast { position: fixed; bottom: 24px; right: 24px; background: #1e293b; color: white; padding: 12px 24px; border-radius: 12px; font-weight: bold; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); transform: translateY(100px); opacity: 0; transition: all 0.3s ease; z-index: 300; }
+        .toast.show { transform: translateY(0); opacity: 1; }
+
+        /* 側邊欄專用 Log 滾動條樣式微調 */
+        #logConsole::-webkit-scrollbar { width: 4px; }
+        #logConsole::-webkit-scrollbar-thumb { background: #334155; border-radius: 2px; }
+    </style>
+</head>
+<body class="min-h-screen text-slate-800">
+
+    <div id="toast" class="toast">已複製到剪貼簿！</div>
+
+    <div id="loginOverlay">
+        <div class="login-card" id="loginBox">
+            <div class="w-20 h-20 bg-slate-900 rounded-3xl mx-auto flex items-center justify-center mb-8 shadow-xl">
+                <i class="fas fa-fingerprint text-white text-3xl"></i>
+            </div>
+            <h2 class="text-2xl font-black text-slate-900 mb-2">系統驗證</h2>
+            <p class="text-slate-400 text-xs font-bold uppercase tracking-widest mb-8">Identity Verification Required</p>
+            <input type="password" id="sysPass" placeholder="請輸入訪問密碼" class="w-full p-4 bg-slate-100 border-none rounded-2xl text-center font-black tracking-[0.5em] focus:ring-2 focus:ring-slate-900 transition-all outline-none mb-4">
+            <button onclick="checkAuth()" class="w-full py-4 bg-slate-900 text-white rounded-2xl font-black hover:bg-slate-800 transition-all active:scale-95 shadow-lg">確認送出</button>
+            <p id="errorHint" class="text-red-500 text-xs font-bold mt-4 opacity-0 transition-opacity">密碼錯誤</p>
+        </div>
+    </div>
+
+    <div id="mainSystem" class="flex flex-col md:flex-row">
+        <aside class="w-full md:w-64 bg-white border-r border-slate-200 flex flex-col z-50 h-screen overflow-hidden">
+            <div class="p-8 border-b border-slate-50 flex items-center text-slate-900 font-black text-xl italic">
+                <i class="fas fa-cube mr-3 text-blue-600"></i>管理後台
+            </div>
+            <nav class="flex-1 mt-6 px-4 overflow-y-auto">
+                <button onclick="showTab('tab-logs')" id="btn-logs" class="nav-btn w-full flex items-center px-6 py-4 active">
+                    <i class="fas fa-list-ul mr-3 text-sm"></i> 卡密列表
+                </button>
+                <button onclick="showTab('tab-users')" id="btn-users" class="nav-btn w-full flex items-center px-6 py-4">
+                    <i class="fas fa-user-friends mr-3 text-sm"></i> 使用統計
+                </button>
+                <button onclick="showTab('tab-status')" id="btn-status" class="nav-btn w-full flex items-center px-6 py-4">
+                    <i class="fas fa-chart-bar mr-3 text-sm"></i> 數據分析
+                </button>
+                <div class="mt-8 px-2">
+                    <button onclick="openModal()" class="w-full bg-blue-600 text-white font-black py-4 rounded-xl shadow-lg shadow-blue-200 hover:bg-blue-700 transition-all active:scale-95">
+                        <i class="fas fa-plus mr-2"></i>生成新卡密
+                    </button>
+                </div>
+            </nav>
+            
+            <div class="p-4 border-t border-slate-100 bg-slate-950 flex flex-col h-48">
+                <div class="flex justify-between items-center mb-2">
+                    <h4 class="text-[10px] font-black text-slate-400 uppercase tracking-widest"><i class="fas fa-history mr-1"></i>系統實時日誌</h4>
+                    <button onclick="clearLogs()" class="text-[9px] text-slate-500 hover:text-slate-300 font-bold">清除</button>
+                </div>
+                <div id="logConsole" class="flex-1 space-y-1 font-mono text-[11px] text-green-400 overflow-y-auto leading-normal">
+                    <div class="text-slate-500">&gt;&gt; 初始化連線中...</div>
+                </div>
+            </div>
+
+            <div class="p-3 text-center bg-slate-50 border-t border-slate-100">
+                <p id="quote-box" class="text-[10px] text-slate-400 font-bold italic tracking-tighter">Supabase 數據同步中...</p>
+            </div>
+        </aside>
+
+        <main class="flex-1 p-6 md:p-10 overflow-y-auto space-y-6 h-screen">
+            <div id="tab-logs" class="tab-content active space-y-6">
+                <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                    <h2 class="text-3xl font-black text-slate-900 italic">Keys Management</h2>
+                    
+                    <div class="flex flex-wrap items-center gap-3 w-full md:w-auto">
+                        <div class="relative flex-1 md:w-64">
+                            <i class="fas fa-search absolute left-4 top-4 text-slate-400 text-sm"></i>
+                            <input type="text" id="searchInput" oninput="filterData()" placeholder="搜尋卡密代碼..." class="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-500 font-bold">
+                        </div>
+                        <select id="filterSelect" onchange="filterData()" class="px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500">
+                            <option value="all">顯示全部卡密</option>
+                            <option value="active">僅看有效 (Active)</option>
+                            <option value="exhausted">僅看已耗盡 (Exhausted)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="bg-white rounded-3xl shadow-sm border border-slate-200 overflow-hidden">
+                    <table class="w-full text-left">
+                        <thead class="bg-slate-50 text-slate-400 text-[10px] font-black uppercase tracking-widest">
+                            <tr>
+                                <th class="px-8 py-5">卡密內容 (key_code)</th>
+                                <th class="px-8 py-5">已用次數 / 上限次數</th>
+                                <th class="px-8 py-5">創建時間</th>
+                                <th class="px-8 py-5 text-center">操作項目</th>
+                            </tr>
+                        </thead>
+                        <tbody id="data-table" class="divide-y divide-slate-100 text-sm">
+                            <tr><td colspan="4" class="p-20 text-center text-slate-300 italic">正在載入雲端數據...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div id="tab-users" class="tab-content space-y-6">
+                <h2 class="text-3xl font-black text-slate-900 italic">Usage Monitor</h2>
+                <div id="user-grid" class="grid grid-cols-1 md:grid-cols-2 gap-6"></div>
+            </div>
+
+            <div id="tab-status" class="tab-content space-y-6">
+                <h2 class="text-3xl font-black text-slate-900 italic">Analytics Charts</h2>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div class="bg-white p-8 rounded-[2.5rem] shadow-sm border border-slate-200 text-center flex flex-col justify-center">
+                        <p class="text-slate-400 text-xs font-black uppercase mb-2">Total Keys Count</p>
+                        <h3 id="stat-total" class="text-7xl font-black text-slate-900 tracking-tighter">0</h3>
+                    </div>
+                    <div class="bg-white p-6 rounded-[2.5rem] shadow-sm border border-slate-200 md:col-span-2">
+                        <p class="text-slate-400 text-xs font-black uppercase mb-4 text-center">卡密使用狀態分布</p>
+                        <div class="w-full h-64 flex justify-center">
+                            <canvas id="chartCanvas"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <div id="customModal" class="fixed inset-0 flex items-center justify-center z-[100] bg-slate-900/40 p-4">
+        <div id="modalBox" class="bg-white rounded-[2.5rem] shadow-2xl w-full max-w-3xl overflow-hidden border border-slate-200">
+            <div class="p-8 border-b border-slate-100 flex justify-between items-center">
+                <h3 class="text-xl font-black italic"><i class="fas fa-terminal mr-2 text-blue-600"></i>卡密控制中心</h3>
+                <button onclick="closeModal()" class="text-slate-300 hover:text-slate-600"><i class="fas fa-times"></i></button>
+            </div>
+            <div class="p-10 grid grid-cols-1 md:grid-cols-2 gap-10">
+                <div class="space-y-6">
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="text-[10px] font-black text-slate-400 uppercase mb-2 block tracking-widest">最大使用次數</label>
+                            <input type="number" id="modalMaxUsage" value="1" class="w-full p-4 bg-slate-50 border border-slate-100 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 font-bold">
+                        </div>
+                        <div>
+                            <label class="text-[10px] font-black text-slate-400 uppercase mb-2 block tracking-widest">批量生成數量 (組)</label>
+                            <input type="number" id="modalBatchCount" value="1" min="1" max="50" class="w-full p-4 bg-slate-50 border border-slate-100 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 font-bold">
+                        </div>
+                    </div>
+                    <div>
+                        <div class="flex justify-between items-end mb-2">
+                            <label class="text-[10px] font-black text-slate-400 uppercase tracking-widest">卡密代碼 (自訂/自動生成)</label>
+                            <button onclick="generateRandomKey()" class="text-[10px] text-blue-600 font-bold"><i class="fas fa-dice mr-1"></i>隨機填入</button>
+                        </div>
+                        <textarea id="modalAction" rows="4" placeholder="留空將自動按批量數量生成隨機卡密，或在此手動輸入特定卡密代碼。" class="w-full p-4 bg-slate-50 border border-slate-100 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 font-mono font-bold resize-none"></textarea>
+                    </div>
+                    <button id="submitBtn" onclick="submitAction()" class="w-full py-5 bg-blue-600 text-white rounded-xl font-black tracking-widest hover:bg-blue-700 transition-all shadow-lg shadow-blue-100">確認並執行寫入</button>
+                </div>
+                <div class="space-y-8 md:border-l md:pl-10">
+                    <div>
+                        <label class="text-[10px] font-black text-slate-400 uppercase mb-4 block tracking-widest">快捷前綴</label>
+                        <div class="grid grid-cols-2 gap-2">
+                            <div onclick="setAction('XS-')" class="macro-tag p-3 rounded-lg text-center text-[11px] font-black bg-slate-50">XS- 前綴</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 🚨 請替換為你自己的 Supabase 配置資訊
+        const SUPABASE_URL = "https://pdmxkspwnxorsoyowtgx.supabase.co"; 
+        const SUPABASE_ANON_KEY = "sb_publishable_ER9oM42esp_34cD-BXDOLA_VAphDItI";
+        
+        const _supabase = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+        const AUTH_KEY = "45617"; 
+        let globalChart = null; 
+        let allCachedData = []; 
+
+        function checkAuth() {
+            const input = document.getElementById('sysPass').value;
+            if(input === AUTH_KEY) {
+                document.getElementById('loginOverlay').style.opacity = "0";
+                document.getElementById('loginOverlay').style.pointerEvents = "none";
+                document.getElementById('mainSystem').classList.add('unlocked');
+                document.body.style.overflow = "auto";
+                addLog("身分驗證成功，順利進入系統。");
+                loadData();
+            } else {
+                document.getElementById('loginBox').classList.add('shake');
+                document.getElementById('errorHint').style.opacity = "1";
+                setTimeout(() => document.getElementById('loginBox').classList.remove('shake'), 400);
+            }
+        }
+
+        function openModal() { document.getElementById('customModal').classList.add('show'); }
+        function closeModal() { document.getElementById('customModal').classList.remove('show'); }
+        function setAction(val) { document.getElementById('modalAction').value = val + document.getElementById('modalAction').value; }
+
+        function makeKeyStr() {
+            const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+            let key = 'XS-';
+            for (let i = 0; i < 16; i++) key += chars.charAt(Math.floor(Math.random() * chars.length));
+            return key;
+        }
+        function generateRandomKey() {
+            document.getElementById('modalAction').value = makeKeyStr();
+        }
+
+        function showToast(text) {
+            const t = document.getElementById('toast');
+            t.innerText = text;
+            t.classList.add('show');
+            setTimeout(() => t.classList.remove('show'), 2000);
+        }
+
+        // 操作日誌輸出函數
+        function addLog(text) {
+            const consoleBox = document.getElementById('logConsole');
+            const now = new Date().toLocaleTimeString();
+            consoleBox.innerHTML += `<div class="text-green-400"><span class="text-slate-600">[${now}]</span> ${text}</div>`;
+            consoleBox.scrollTop = consoleBox.scrollHeight;
+        }
+        function clearLogs() { document.getElementById('logConsole').innerHTML = ''; }
+
+        function copyToClipboard(text) {
+            navigator.clipboard.writeText(text).then(() => {
+                showToast(`已複製: ${text}`);
+                addLog(`複製卡密: ${text}`);
+            }).catch(err => {
+                alert('複製失敗');
+            });
+        }
+
+        async function submitAction() {
+            const manualCode = document.getElementById('modalAction').value.trim();
+            const maxUsage = parseInt(document.getElementById('modalMaxUsage').value) || 1;
+            const batchCount = parseInt(document.getElementById('modalBatchCount').value) || 1;
+            const btn = document.getElementById('submitBtn');
+            
+            btn.innerText = '處理中...';
+            btn.classList.add('opacity-50', 'pointer-events-none');
+            
+            let insertRows = [];
+            if (manualCode) {
+                insertRows.push({ key_code: manualCode, max_usage: maxUsage, used_count: 0, valid_days: 30 });
+            } else {
+                for(let i = 0; i < batchCount; i++) {
+                    insertRows.push({ key_code: makeKeyStr(), max_usage: maxUsage, used_count: 0, valid_days: 30 });
+                }
+            }
+            
+            try {
+                const { error } = await _supabase.from('keys').insert(insertRows);
+                if (error) throw error;
+
+                addLog(`批量生成 ${insertRows.length} 組卡密。`);
+                showToast(`成功生成 ${insertRows.length} 組卡密！`);
+                
+                closeModal();
+                document.getElementById('modalAction').value = '';
+                document.getElementById('modalBatchCount').value = '1';
+                btn.innerText = '確認並執行寫入';
+                btn.classList.remove('opacity-50', 'pointer-events-none');
+                loadData();
+            } catch (e) { 
+                alert("寫入失敗: " + e.message);
+                btn.innerText = '確認並執行寫入';
+                btn.classList.remove('opacity-50', 'pointer-events-none');
+            }
+        }
+
+        async function deleteKey(id, keyCode) {
+            if(!confirm(`確定要永久刪除此卡密嗎？\n${keyCode}`)) return;
+            try {
+                const { error } = await _supabase.from('keys').delete().eq('id', id);
+                if (error) throw error;
+                addLog(`永久移除卡密: ${keyCode}`);
+                loadData();
+            } catch (e) {
+                alert("刪除失敗：" + e.message);
+            }
+        }
+
+        async function updateMaxUsage(id, currentVal, keyCode) {
+            const newVal = prompt("請輸入新的最大使用上限次數:", currentVal);
+            if (newVal === null) return; 
+            const parsedVal = parseInt(newVal);
+            if (isNaN(parsedVal) || parsedVal < 0) {
+                alert("請輸入有效的正整數數字！");
+                return;
+            }
+            try {
+                const { error } = await _supabase.from('keys').update({ max_usage: parsedVal }).eq('id', id);
+                if (error) throw error;
+                addLog(`上限調整 [${keyCode}]：${currentVal} ➔ ${parsedVal}`);
+                loadData();
+            } catch (e) {
+                alert("更新失敗：" + e.message);
+            }
+        }
+
+        async function loadData() {
+            try {
+                const { data, error } = await _supabase
+                    .from('keys')
+                    .select('*')
+                    .order('created_at', { ascending: false });
+
+                if (error) throw error;
+
+                allCachedData = data; 
+                filterData(); 
+                renderUsers(data);
+                renderChart(data);
+                animateCount('stat-total', data.length);
+            } catch (e) { 
+                console.error("Supabase 同步失敗:", e); 
+            }
+        }
+
+        function filterData() {
+            const searchText = document.getElementById('searchInput').value.toLowerCase().trim();
+            const filterType = document.getElementById('filterSelect').value;
+            
+            const filtered = allCachedData.filter(row => {
+                const matchesSearch = (row.key_code || '').toLowerCase().includes(searchText);
+                const isExhausted = row.used_count >= row.max_usage;
+                
+                if (filterType === 'active') {
+                    return matchesSearch && !isExhausted;
+                } else if (filterType === 'exhausted') {
+                    return matchesSearch && isExhausted;
+                }
+                return matchesSearch;
+            });
+            renderTable(filtered);
+        }
+
+        function animateCount(id, target) {
+            let current = 0;
+            const obj = document.getElementById(id);
+            if (target === 0) { obj.innerText = 0; return; }
+            const step = Math.ceil(target / 30) || 1;
+            const timer = setInterval(() => {
+                current += step;
+                if (current >= target) { obj.innerText = target; clearInterval(timer); }
+                else { obj.innerText = current; }
+            }, 30);
+        }
+
+        function renderTable(data) {
+            const tableBody = document.getElementById('data-table');
+            tableBody.innerHTML = '';
+            if(data.length === 0){
+                tableBody.innerHTML = `<tr><td colspan="4" class="p-20 text-center text-slate-300 italic">查無符合搜尋條件的卡密數據</td></tr>`;
+                return;
+            }
+            data.forEach((row, idx) => {
+                const tr = document.createElement('tr');
+                tr.className = "hover:bg-slate-50 transition duration-300 opacity-0";
+                tr.style.animation = `slideIn 0.3s forwards ${idx * 0.01}s`;
+                
+                const dateStr = row.created_at ? new Date(row.created_at).toLocaleString() : '無記錄';
+                const isExhausted = row.used_count >= row.max_usage;
+
+                tr.innerHTML = `
+                    <td class="px-8 py-5 font-black text-slate-800 font-mono">
+                        <div class="flex items-center space-x-2">
+                            <span>${row.key_code || 'N/A'}</span>
+                            <button onclick="copyToClipboard('${row.key_code}')" class="text-slate-400 hover:text-blue-500 transition px-1" title="複製卡密">
+                                <i class="far fa-copy text-xs"></i>
+                            </button>
+                        </div>
+                    </td>
+                    <td class="px-8 py-5">
+                        <div class="flex items-center space-x-2">
+                            <span class="px-3 py-1.5 rounded-lg text-xs font-bold ${isExhausted ? 'bg-red-50 text-red-600' : 'bg-slate-100 text-slate-600'}">
+                                ${row.used_count} / ${row.max_usage}
+                            </span>
+                            <button onclick="updateMaxUsage('${row.id}', ${row.max_usage}, '${row.key_code}')" class="text-blue-500 hover:text-blue-700 text-xs p-1" title="修改上限">
+                                <i class="fas fa-edit"></i>
+                            </button>
+                        </div>
+                    </td>
+                    <td class="px-8 py-5 text-slate-400 font-mono text-[11px] italic">${dateStr}</td>
+                    <td class="px-8 py-5 text-center">
+                        <button onclick="deleteKey('${row.id}', '${row.key_code}')" class="bg-red-50 text-red-500 hover:bg-red-500 hover:text-white px-3 py-1.5 rounded-xl text-xs font-bold transition">
+                            <i class="fas fa-trash-alt mr-1"></i> 刪除
+                        </button>
+                    </td>
+                `;
+                tableBody.appendChild(tr);
+            });
+        }
+
+        function renderUsers(data) {
+            const userGrid = document.getElementById('user-grid');
+            userGrid.innerHTML = '';
+            
+            let activeKeys = 0;
+            let exhaustedKeys = 0;
+            data.forEach(row => {
+                if(row.used_count >= row.max_usage) exhaustedKeys++;
+                else activeKeys++;
+            });
+
+            const stats = [
+                { name: '可用卡密總數 (Active)', count: activeKeys, icon: 'fa-check-circle', color: 'text-green-600' },
+                { name: '已耗盡卡密數 (Exhausted)', count: exhaustedKeys, icon: 'fa-times-circle', color: 'text-red-500' }
+            ];
+
+            stats.forEach(item => {
+                userGrid.innerHTML += `
+                    <div class="bg-white p-8 rounded-3xl border border-slate-100 flex items-center space-x-5 shadow-sm">
+                        <div class="h-14 w-14 bg-slate-900 text-white rounded-2xl flex items-center justify-center font-black text-xl">
+                            <i class="fas ${item.icon}"></i>
+                        </div>
+                        <div>
+                            <div class="font-black text-lg text-slate-900">${item.name}</div>
+                            <div class="text-2xl font-black ${item.color} mt-1">${item.count} <span class="text-xs text-slate-400 font-normal">組</span></div>
+                        </div>
+                    </div>`;
+            });
+        }
+
+        function renderChart(data) {
+            let activeKeys = 0;
+            let exhaustedKeys = 0;
+            data.forEach(row => {
+                if(row.used_count >= row.max_usage) exhaustedKeys++;
+                else activeKeys++;
+            });
+
+            const canvas = document.getElementById('chartCanvas');
+            if (!canvas) return;
+            const ctx = canvas.getContext('2d');
+            
+            if (globalChart) {
+                globalChart.data.datasets[0].data = [activeKeys, exhaustedKeys];
+                globalChart.update();
+            } else {
+                globalChart = new Chart(ctx, {
+                    type: 'doughnut',
+                    data: {
+                        labels: ['可用 (Active)', '已耗盡 (Exhausted)'],
+                        datasets: [{
+                            data: [activeKeys, exhaustedKeys],
+                            backgroundColor: ['#22c55e', '#ef4444'],
+                            borderWidth: 0,
+                            hoverOffset: 4
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { position: 'bottom', labels: { font: { weight: 'bold' } } }
+                        }
+                    }
+                });
+            }
+        }
+
+        function showTab(tabId) {
+            document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+            document.querySelectorAll('.nav-btn').forEach(el => el.classList.remove('active'));
+            document.getElementById(tabId).classList.add('active');
+            document.getElementById('btn-' + tabId.split('-')[1]).classList.add('active');
+        }
+
+        setInterval(loadData, 15000);
+    </script>
+</body>
+</html>
